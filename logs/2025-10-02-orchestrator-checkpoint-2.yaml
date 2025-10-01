@@ -1,0 +1,17 @@
+project: Project_Orchestrator
+timestamp: [SET CURRENT DATETIME]
+type: checkpoint
+
+context:
+  goal: "Implement Phase I of checkpoint.py: Core I/O (Read Brain, Read Checkpoint) and CLI setup."
+
+decisions:
+  - "The script uses the Orchestrator's brain as the master log to dynamically find paths for all managed projects."
+  - "Robust error handling is implemented for JSON and YAML loading (FileNotFound, DecodeError)."
+  - "The dynamic pathing logic was debugged and confirmed to be working for both existing and placeholder projects."
+
+next_steps:
+  - "Implement the Git module in checkpoint.py to automate staging, committing, and pushing changes."
+  - "Implement the 'new' action: generate a new Checkpoint YAML based on a prompt and auto-fill data."
+  - "Refactor file paths from hardcoded global constants to dynamic variables based on the project argument."
+  - "Complete Phase II: Testing the full 'new' and 'commit' workflow."

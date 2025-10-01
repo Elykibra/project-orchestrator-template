@@ -1,0 +1,28 @@
+{
+  "project": "Project_Orchestrator",
+  "version": "v1.1",
+  "summary": "A foundational project repository template containing the Mother AI configuration, structured logging files, and a Python automation script ('checkpoint.py') to manage project state and Git commits.",
+  "modules": {
+    "mother_ai_config": "Holds the core Mother AI instruction set and meta-data (e.g., role, version, rules).",
+    "project_brains_dir": "Directory for all future project architecture files (JSON format).",
+    "project_logs_dir": "Directory for all project-specific checkpoint and legacy log files (YAML/JSON format).",
+    "automation_script": "A Python script ('checkpoint.py') responsible for generating checkpoint YAML content, handling Git commits, and managing the workflow."
+  },
+  "managed_projects": {
+    "Project_Orchestrator": {
+      "brain_path": "brains/Project_Orchestrator/project_orchestrator.brain.v1.json",
+      "latest_checkpoint": "logs/2025-10-02-orchestrator-checkpoint-1.yaml",
+      "status": "In Development"
+    },
+    "discord_ai_bot": {
+      "brain_path": "[Placeholder: Path to discord_ai_project.brain.v2.json]",
+      "latest_checkpoint": "logs/2025-10-01-checkpoint-2.yaml",
+      "status": "Active Maintenance"
+    }
+  },
+  "goals": [
+    "Fully automate the checkpoint logging process with a single command.",
+    "Ensure all project documentation and logs are structured (JSON/YAML) and machine-readable.",
+    "Establish a template that can be quickly forked to start any new project."
+  ]
+}
