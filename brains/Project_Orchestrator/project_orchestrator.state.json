@@ -1,0 +1,23 @@
+{
+    "managed_projects": {
+        "Project_Orchestrator": {
+            "brain_path": "brains/Project_Orchestrator/project_orchestrator.brain.v1.json",
+            "latest_checkpoint": "brains/Project_Orchestrator/logs/2025-10-02-orchestrator-checkpoint-2.yaml",
+            "status": "In Development"
+        },
+        "discord_ai_bot": {
+            "brain_path": "brains/discord_ai_bot/discord_ai_project.brain.v2.json",
+            "latest_checkpoint": "brains/discord_ai_bot/logs/2025-10-01-checkpoint-2.yaml",
+            "status": "Active Maintenance"
+        },
+        "Code_Analyzer": {
+            "status": "initialized",
+            "current_version": "v1.0",
+            "brain_path": "brains/Code_Analyzer/Code_Analyzer.brain.v1.json",
+            "latest_checkpoint": "brains/Code_Analyzer/logs/2025-10-01-checkpoint-0.yaml"
+        }
+    },
+    "meta": {
+        "active_project": "Code_Analyzer"
+    }
+}
