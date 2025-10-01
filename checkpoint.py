@@ -4,6 +4,7 @@ import yaml
 import sys
 import os
 import git
+import datetime
 
 # --- Configuration (Hardcoded for Phase I) ---
 # NOTE: These paths will be derived dynamically in later phases.
@@ -141,6 +142,62 @@ def commit_changes(project_name: str, checkpoint_data: dict):
         print(f"CRITICAL ERROR during Git automation: {e}")
 
 
+def create_new_checkpoint(project_name: str, latest_checkpoint_data: dict):
+    """Interactively creates and saves a new Checkpoint YAML log."""
+
+    print("\nACTION: Creating New Checkpoint Log...")
+
+    # 1. Gather Interactive Input
+    new_summary = input("Enter a summary for the work completed this session: ")
+    new_goal = input("Enter the overall goal for the NEXT Checkpoint: ")
+
+    # Gather next steps interactively
+    print("\n--- Next Steps ---")
+    new_next_steps = []
+    print("Enter tasks for the NEXT Checkpoint (one per line). Type 'done' when finished.")
+    while True:
+        task = input(f"Task {len(new_next_steps) + 1} (or 'done'): ")
+        if task.lower() == 'done':
+            break
+        if task:
+            new_next_steps.append(task)
+
+    if not new_next_steps:
+        print("WARNING: Next Steps list is empty. Aborting checkpoint creation.")
+        return
+
+    # 2. Build New Checkpoint Data Structure
+    new_checkpoint_data = {
+        'project': project_name,
+        'timestamp': datetime.datetime.now().isoformat(),  # We need to import datetime!
+        'type': 'checkpoint',
+        'summary': new_summary,
+        'context': {
+            'previous_checkpoint_summary': latest_checkpoint_data.get('summary', 'N/A'),
+            'previous_next_steps_completed': latest_checkpoint_data.get('next_steps', []),
+            # We can assume these are complete
+            'next_goal': new_goal
+        },
+        'decisions': [],  # Left empty for manual population
+        'next_steps': new_next_steps
+    }
+
+    # 3. Determine New File Name (Must be unique!)
+    # We will use the current date and append a count if needed (a simple version)
+    base_filename = f"logs/{datetime.date.today().isoformat()}-{project_name}-checkpoint-NEW.yaml"
+
+    # 4. Save the New Checkpoint File
+    try:
+        with open(base_filename, 'w', encoding='utf-8') as f:
+            # Use safe_dump to write the YAML content
+            yaml.safe_dump(new_checkpoint_data, f, sort_keys=False, default_flow_style=False)
+        print(f"\nSUCCESS: New Checkpoint log created: {base_filename}")
+        print("Remember to review and manually fill the 'decisions' field before committing!")
+
+    except Exception as e:
+        print(f"ERROR: Failed to save new checkpoint file: {e}")
+
+
 def main():
     """Main entry point for the checkpoint utility."""
     parser = argparse.ArgumentParser(
@@ -166,38 +223,43 @@ def main():
 
     print(f"--- Mother AI Checkpoint Utility (Project: {args.project}) ---")
 
-    # 1. Load the Orchestrator's Brain to find file paths
+    # 1. Load the Orchestrator's Brain
     orchestrator_brain = read_brain(PROJECT_BRAIN_PATH)
     if not orchestrator_brain:
         print("CRITICAL: Failed to load Orchestrator's brain. Exiting.")
         return
 
-    # 2. Get the specific project file paths based on CLI argument
+    # 2. Get the specific project file paths
     target_brain_path, target_checkpoint_path = get_project_paths(orchestrator_brain, args.project)
 
     if not target_brain_path:
-        # Error message handled in get_project_paths
+        # Error handled in get_project_paths
         return
+
+    # --- Checkpoint Action Logic ---
+
+    # All actions require the target project's current context
+    target_checkpoint = read_checkpoint(target_checkpoint_path)
 
     if args.action == 'status':
         print("\nACTION: Status Check")
+        # For status, we confirm both brain and checkpoint loaded successfully (already done above)
+        if target_checkpoint:
+            print("\nSUCCESS: Target Project Brain and Checkpoint files loaded successfully.")
+            print(f"Current Checkpoint Goal: {target_checkpoint.get('context', {}).get('next_goal', 'N/A')}")
+        else:
+            print("\nSTATUS: Brain is valid, but Checkpoint failed to load.")
 
-        # --- Core Logic Execution (Using dynamic paths) ---
-        target_brain = read_brain(target_brain_path)
+    elif args.action == 'new':
+        if not target_checkpoint:
+            print("Cannot create a new checkpoint: Failed to load latest checkpoint data.")
+            return
 
-        if target_brain:
-            target_checkpoint = read_checkpoint(target_checkpoint_path)
+        # Pass the latest checkpoint data to the builder function
+        create_new_checkpoint(args.project, target_checkpoint)
 
-            if target_checkpoint:
-                print("\nSUCCESS: Target Project Brain and Checkpoint files loaded successfully.")
-                print(f"Current Checkpoint Goal: {target_checkpoint.get('context', {}).get('goal', 'N/A')}")
-            else:
-                print("\nSTATUS: Target Brain is valid, but Checkpoint failed to load.")
-
-    elif args.action == 'commit':  # <--- NEW LOGIC HERE
+    elif args.action == 'commit':
         print("\nACTION: Commit Checkpoint")
-        # For committing, we MUST read the target checkpoint for the message
-        target_checkpoint = read_checkpoint(target_checkpoint_path)
 
         if target_checkpoint:
             commit_changes(args.project, target_checkpoint)
