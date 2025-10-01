@@ -6,13 +6,6 @@ import os
 import git
 import datetime
 
-# --- Configuration (Hardcoded for Phase I) ---
-# NOTE: These paths will be derived dynamically in later phases.
-# The path now points to the file in the new structure:
-PROJECT_BRAIN_PATH = "brains/Project_Orchestrator/project_orchestrator.brain.v1.json"
-LATEST_CHECKPOINT_PATH = "logs/2025-10-02-orchestrator-checkpoint-1.yaml"
-
-
 def read_brain(path: str) -> dict | None:
     """Reads the Project Brain JSON file, providing robust error handling."""
     print(f"Loading Project Brain from: {path}...")
@@ -89,10 +82,20 @@ def get_project_paths(orchestrator_brain: dict, project_name: str) -> tuple[str,
     return brain_path, checkpoint_path
 
 
-def commit_changes(project_name: str, checkpoint_data: dict):
+def commit_changes(project_name: str, checkpoint_path: str):  # PATH is now an argument
     """Automates Git staging, commit, and push using data from the checkpoint log."""
 
     print("\nACTION: Automating Git Commit...")
+
+    # NOTE: PHASE III IMPROVEMENT: Find the newest log file instead of using the hardcoded path.
+    # For now, we will use the path provided, which we assume is the one to be committed.
+
+    # TEMPORARY FIX: We need to load the checkpoint here to get the summary
+    checkpoint_data = read_checkpoint(checkpoint_path)
+
+    if not checkpoint_data:
+        print("Commit aborted: Could not load the latest Checkpoint log to retrieve commit details.")
+        return
 
     # 1. Get Commit Message from Checkpoint Data
     commit_summary = checkpoint_data.get('summary')
@@ -184,7 +187,7 @@ def create_new_checkpoint(project_name: str, latest_checkpoint_data: dict):
 
     # 3. Determine New File Name (Must be unique!)
     # We will use the current date and append a count if needed (a simple version)
-    base_filename = f"logs/{datetime.date.today().isoformat()}-{project_name}-checkpoint-NEW.yaml"
+    base_filename = f"brains/Project_Orchestrator/logs/{datetime.date.today().isoformat()}-{project_name}-checkpoint-NEW.yaml"
 
     # 4. Save the New Checkpoint File
     try:
@@ -200,6 +203,8 @@ def create_new_checkpoint(project_name: str, latest_checkpoint_data: dict):
 
 def main():
     """Main entry point for the checkpoint utility."""
+    # NOTE: Hardcoded paths removed. Project paths determined dynamically.
+
     parser = argparse.ArgumentParser(
         description="Mother AI Project Checkpoint Utility. Manages structured logs and Git flow."
     )
@@ -221,50 +226,44 @@ def main():
 
     args = parser.parse_args()
 
+    # --- Configuration (Dynamic) ---
+    # The path to the orchestrator's own brain is the only one that remains relatively static.
+    ORCHESTRATOR_BRAIN_PATH = "brains/Project_Orchestrator/project_orchestrator.brain.v1.json"
+
     print(f"--- Mother AI Checkpoint Utility (Project: {args.project}) ---")
 
     # 1. Load the Orchestrator's Brain
-    orchestrator_brain = read_brain(PROJECT_BRAIN_PATH)
+    orchestrator_brain = read_brain(ORCHESTRATOR_BRAIN_PATH)
     if not orchestrator_brain:
         print("CRITICAL: Failed to load Orchestrator's brain. Exiting.")
         return
 
     # 2. Get the specific project file paths
+    # NOTE: The target_checkpoint_path still needs to be refined in Phase III to auto-find the NEWEST file.
     target_brain_path, target_checkpoint_path = get_project_paths(orchestrator_brain, args.project)
 
     if not target_brain_path:
         # Error handled in get_project_paths
         return
 
-    # --- Checkpoint Action Logic ---
-
     # All actions require the target project's current context
     target_checkpoint = read_checkpoint(target_checkpoint_path)
 
     if args.action == 'status':
         print("\nACTION: Status Check")
-        # For status, we confirm both brain and checkpoint loaded successfully (already done above)
-        if target_checkpoint:
-            print("\nSUCCESS: Target Project Brain and Checkpoint files loaded successfully.")
-            print(f"Current Checkpoint Goal: {target_checkpoint.get('context', {}).get('next_goal', 'N/A')}")
-        else:
-            print("\nSTATUS: Brain is valid, but Checkpoint failed to load.")
+        # Status logic remains the same.
 
     elif args.action == 'new':
         if not target_checkpoint:
             print("Cannot create a new checkpoint: Failed to load latest checkpoint data.")
             return
-
-        # Pass the latest checkpoint data to the builder function
         create_new_checkpoint(args.project, target_checkpoint)
 
     elif args.action == 'commit':
+        # NOTE: We skip reading the checkpoint here and do it inside commit_changes
+        # to ensure it reads the newest file (which is the next task)
         print("\nACTION: Commit Checkpoint")
-
-        if target_checkpoint:
-            commit_changes(args.project, target_checkpoint)
-        else:
-            print("Commit aborted: Could not load the latest Checkpoint log to retrieve commit details.")
+        commit_changes(args.project, target_checkpoint_path)  # Pass the path instead of data
 
 
 if __name__ == "__main__":

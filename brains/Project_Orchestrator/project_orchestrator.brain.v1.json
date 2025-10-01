@@ -11,12 +11,12 @@
   "managed_projects": {
     "Project_Orchestrator": {
       "brain_path": "brains/Project_Orchestrator/project_orchestrator.brain.v1.json",
-      "latest_checkpoint": "logs/2025-10-02-orchestrator-checkpoint-1.yaml",
+      "latest_checkpoint": "brains/Project_Orchestrator/logs/2025-10-02-orchestrator-checkpoint-2.yaml",
       "status": "In Development"
     },
     "discord_ai_bot": {
-      "brain_path": "[Placeholder: Path to discord_ai_project.brain.v2.json]",
-      "latest_checkpoint": "logs/2025-10-01-checkpoint-2.yaml",
+      "brain_path": "brains/discord_ai_bot/discord_ai_project.brain.v2.json",
+      "latest_checkpoint": "brains/discord_ai_bot/logs/2025-10-01-checkpoint-2.yaml",
       "status": "Active Maintenance"
     }
   },
