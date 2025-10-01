@@ -1,4 +1,5 @@
 import argparse
+import glob
 import json
 import yaml
 import sys
@@ -6,6 +7,11 @@ import os
 import git
 import datetime
 import re
+
+# --- Configuration (Dynamic) ---
+# The path to the orchestrator's own brain is the only one that remains relatively static.
+ORCHESTRATOR_BRAIN_PATH = "brains/Project_Orchestrator/project_orchestrator.brain.v1.json"
+ORCHESTRATOR_STATE_PATH = "brains/Project_Orchestrator/project_orchestrator.state.json"
 
 def read_brain(path: str) -> dict | None:
     """Reads the Project Brain JSON file, providing robust error handling."""
@@ -31,15 +37,17 @@ def read_brain(path: str) -> dict | None:
         return None
 
 
-def parse_ai_design_file(file_path: str) -> dict | None:
+def parse_ai_design_content(content: str) -> dict | None:
     """
-    Reads the raw text file from the LLM, extracts, and validates the
-    JSON (Brain) and YAML (Checkpoint) content blocks using robust regex search.
+    Reads the raw text content from the LLM (pasted into the GUI),
+    extracts, and validates the JSON (Brain) and YAML (Checkpoint)
+    content blocks using robust regex search.
     """
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
+    if not content or content.strip() == "":
+        print("ERROR: Design content is empty. Please paste the AI output.")
+        return None
 
+    try:
         # 1. FIND and EXTRACT JSON using Regex (most reliable method)
         # Search for: ```json (optional whitespace) { ... } (optional whitespace) ```
         json_pattern = re.compile(r'```json\s*(\{.*?\})\s*```', re.DOTALL)
@@ -76,9 +84,6 @@ def parse_ai_design_file(file_path: str) -> dict | None:
             "checkpoint": checkpoint_data
         }
 
-    except FileNotFoundError:
-        print(f"ERROR: Design file not found at '{file_path}'.")
-        return None
     except json.JSONDecodeError as e:
         print(f"ERROR: Failed to decode the extracted JSON block (Project Brain). Decoding error: {e}")
         return None
@@ -86,7 +91,7 @@ def parse_ai_design_file(file_path: str) -> dict | None:
         print("ERROR: Failed to decode the extracted YAML block (Initial Checkpoint).")
         return None
     except Exception as e:
-        print(f"CRITICAL ERROR during file parsing: {e}")
+        print(f"CRITICAL ERROR during content parsing: {e}")
         return None
 
 def read_checkpoint(path: str) -> dict | None:
@@ -233,10 +238,43 @@ def commit_changes(project_name: str, checkpoint_path: str):  # PATH is now an a
         print(f"CRITICAL ERROR during Git automation: {e}")
 
 
+LOGS_DIR = "brains/Project_Orchestrator/logs"
+
+
+def _get_next_checkpoint_index(project_name: str) -> int:
+    """Finds the largest existing checkpoint index and returns the next sequential number."""
+
+    # Pattern to match committed files, e.g., '2025-10-01-*-Project_Orchestrator-checkpoint-2.yaml'
+    # We look for the number right before .yaml
+    # NOTE: The * in the pattern is correct, but the log files in your system are named
+    # 'YYYY-MM-DD-HHMMSS-Project_Orchestrator-checkpoint-X.yaml'.
+
+    # Updated search pattern to exclude the -NEW.yaml files and target indexed files
+    search_pattern = os.path.join(LOGS_DIR, f"*-{project_name}-checkpoint-*.yaml")
+
+    max_index = 0
+
+    for log_file in glob.glob(search_pattern):
+        # We only want to process files with a numeric index, not '-NEW'
+        if "-NEW.yaml" in log_file:
+            continue
+
+        # Regex to find the index (number) right before the '.yaml' extension
+        match = re.search(r'-checkpoint-(\d+)\.yaml$', log_file)
+        if match:
+            current_index = int(match.group(1))
+            if current_index > max_index:
+                max_index = current_index
+
+    # Checkpoint 0 is the initial log. We start counting at 1 for subsequent logs.
+    # The logic correctly returns max_index + 1.
+    return max_index + 1
+
 def create_new_checkpoint(project_name: str, latest_checkpoint_data: dict):
     """Interactively creates and saves a new Checkpoint YAML log."""
 
     print("\nACTION: Creating New Checkpoint Log...")
+    current_time = datetime.datetime.now()
 
     # 1. Gather Interactive Input
     new_summary = input("Enter a summary for the work completed this session: ")
@@ -260,7 +298,7 @@ def create_new_checkpoint(project_name: str, latest_checkpoint_data: dict):
     # 2. Build New Checkpoint Data Structure
     new_checkpoint_data = {
         'project': project_name,
-        'timestamp': datetime.datetime.now().isoformat(),  # We need to import datetime!
+        'timestamp': current_time.isoformat(), # Uses full timestamp
         'type': 'checkpoint',
         'summary': new_summary,
         'context': {
@@ -275,7 +313,8 @@ def create_new_checkpoint(project_name: str, latest_checkpoint_data: dict):
 
     # 3. Determine New File Name (Must be unique!)
     # We will use the current date and append a count if needed (a simple version)
-    base_filename = f"brains/Project_Orchestrator/logs/{datetime.date.today().isoformat()}-{project_name}-checkpoint-NEW.yaml"
+    file_timestamp = current_time.strftime('%Y-%m-%d-%H%M%S')
+    base_filename = f"brains/Project_Orchestrator/logs/{file_timestamp}-{project_name}-checkpoint-NEW.yaml"
 
     # 4. Save the New Checkpoint File
     try:
@@ -289,13 +328,72 @@ def create_new_checkpoint(project_name: str, latest_checkpoint_data: dict):
         print(f"ERROR: Failed to save new checkpoint file: {e}")
 
 
-def create_project(project_name: str, orchestrator_state: dict, orchestrator_state_path: str, design_file_path: str):
+def update_checkpoint_file(project_name: str) -> str or None:
+    """
+    Finds the latest *-NEW.yaml draft, renames it to the next sequential index,
+    and returns the new finalized path.
+    """
+    # NOTE: LOGS_DIR, os, glob, and re must be imported/defined.
+    LOGS_DIR = "brains/Project_Orchestrator/logs"  # Ensure this matches your path
+
+    # 1. Find the NEW Draft File
+    new_draft_pattern = os.path.join(LOGS_DIR, f"*-{project_name}-checkpoint-NEW.yaml")
+    new_files = glob.glob(new_draft_pattern)
+
+    if not new_files:
+        print("ERROR: Could not find any checkpoint-NEW.yaml draft to finalize.")
+        return None
+
+    # Get the most recently modified NEW file
+    old_path = max(new_files, key=os.path.getctime)
+
+    # 2. Determine the Next Index
+    next_index = _get_next_checkpoint_index(project_name)  # Uses the helper function
+
+    # 3. Define New Name (Replace the '-NEW.yaml' suffix)
+    new_path = old_path.replace("-checkpoint-NEW.yaml", f"-checkpoint-{next_index}.yaml")
+
+    # 4. Perform Rename
+    try:
+        os.rename(old_path, new_path)
+        print(f"SUCCESS: Checkpoint finalized and renamed to: {os.path.basename(new_path)}")
+
+        # 5. Load Orchestrator State
+        state_data = read_orchestrator_state(ORCHESTRATOR_STATE_PATH)
+        if not state_data:
+            print("WARNING: State load failed. Cannot update latest_checkpoint path.")
+            # Continue running to avoid crashing the whole process
+            return new_path
+
+        # 6. Update the 'latest_checkpoint' path
+        state_data['managed_projects'][project_name]['latest_checkpoint'] = new_path
+
+        # 7. Save the Orchestrator State
+        if save_orchestrator_state(ORCHESTRATOR_STATE_PATH, state_data):
+            print("INFO: Orchestrator State updated with new latest_checkpoint path.")
+        else:
+            print("WARNING: Failed to save Orchestrator State file.")
+
+        # ---------------------------
+
+        print("\nACTION: Please review the finalized file before manually running 'git add' and 'git commit'.")
+        return new_path
+
+    except OSError as e:
+        print(f"ERROR: Failed to rename the checkpoint file: {e}")
+        return None
+
+
+# NOTE: You must also include the helper function:
+# def _get_next_checkpoint_index(project_name: str) -> int: ... (as provided earlier)
+
+def create_project(project_name: str, orchestrator_state: dict, orchestrator_state_path: str, design_content: str) -> bool:
 
     print(f"\nACTION: Scaffolding New Project '{project_name}'...")
     date_stamp = datetime.date.today().isoformat()
 
     # --- NEW: PARSE THE AI DESIGN FILE ---
-    design_data = parse_ai_design_file(design_file_path)
+    design_data = parse_ai_design_content(design_content)
     if not design_data:
         print("Aborting project creation due to design file errors.")
         return False
@@ -391,7 +489,7 @@ def main():
     parser.add_argument(
         'action',
         type=str,
-        choices=['status', 'new', 'commit', 'create', 'revert'],
+        choices=['status', 'new', 'commit', 'create', 'revert', 'update'],
         help='The action to perform: check status, create a new project, create a new checkpoint, or commit the changes.'
     )
 
@@ -402,7 +500,6 @@ def main():
         help='The name of the project being worked on.'
     )
 
-    # --- ADD THIS NEW ARGUMENT ---
     parser.add_argument(
         '--design-file',
         type=str,
@@ -418,10 +515,10 @@ def main():
         print("ERROR: The 'create' action requires the '--design-file' argument.")
         sys.exit(1)
 
-    # --- Configuration (Dynamic) ---
-    # The path to the orchestrator's own brain is the only one that remains relatively static.
-    ORCHESTRATOR_BRAIN_PATH = "brains/Project_Orchestrator/project_orchestrator.brain.v1.json"
-    ORCHESTRATOR_STATE_PATH = "brains/Project_Orchestrator/project_orchestrator.state.json"
+    if args.action == 'update':
+        # Simply call the update logic and exit, as its job is done.
+        update_checkpoint_file(args.project)
+        return # ***CRITICAL: Exit main() after update is done***
 
     print(f"--- Mother AI Checkpoint Utility (Project: {args.project}) ---")
 
