@@ -1,0 +1,18 @@
+project: Project_Orchestrator
+timestamp: [SET CURRENT DATETIME]
+type: checkpoint
+summary: "Setup of GitHub repository, creation of base file structure, boilerplate, and core configuration files (Phase I)."
+
+context:
+  goal: "Initialize the GitHub repository, set up the base file structure, and create the essential project files (Brain, Checkpoint 1)."
+
+decisions:
+  - "The main automation script will be named 'checkpoint.py'."
+  - "The project directory structure will separate brains from logs (e.g., 'brains/' and 'logs/')."
+  - "The core Mother AI definition files will be included in this template."
+
+next_steps:
+  - "Initialize a new GitHub repository named 'project-orchestrator-template'."
+  - "Create the initial file structure: /brains, /logs, and checkpoint.py (empty)."
+  - "Add the generated 'project_orchestrator.brain.v1.json' and '2025-10-02-orchestrator-checkpoint-1.yaml' to the new repo."
+  - "Draft the initial README.md, explaining the Mother AI workflow system."

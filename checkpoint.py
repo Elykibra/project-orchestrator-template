@@ -3,6 +3,7 @@ import json
 import yaml
 import sys
 import os
+import git
 
 # --- Configuration (Hardcoded for Phase I) ---
 # NOTE: These paths will be derived dynamically in later phases.
@@ -87,6 +88,59 @@ def get_project_paths(orchestrator_brain: dict, project_name: str) -> tuple[str,
     return brain_path, checkpoint_path
 
 
+def commit_changes(project_name: str, checkpoint_data: dict):
+    """Automates Git staging, commit, and push using data from the checkpoint log."""
+
+    print("\nACTION: Automating Git Commit...")
+
+    # 1. Get Commit Message from Checkpoint Data
+    commit_summary = checkpoint_data.get('summary')
+    if not commit_summary:
+        print("ERROR: Checkpoint log is missing the required 'summary' field for the commit message. Aborting commit.")
+        return
+
+    # 2. Get Files to Commit from Checkpoint Data (or assume all staged)
+    # NOTE: In a future phase, we would get this from the 'files_updated' field.
+    # For now, we will stage ALL changes, which is a safer default.
+
+    try:
+        # Initialize the Git repository object. Assumes we are running in the project root.
+        repo = git.Repo(os.getcwd())
+
+        # Check for uncommitted changes (index is dirty)
+        if not repo.is_dirty(untracked_files=True):
+            print("INFO: No changes detected to commit. Git status is clean.")
+            return
+
+        # 3. Stage Files (stage all tracked and untracked changes for simplicity in this phase)
+        print("Staging all modified and untracked files...")
+        repo.git.add(A=True)  # Stages ALL changes (tracked and untracked)
+
+        # 4. Perform Commit
+        commit_message = f"feat: Checkpoint - {project_name} - {commit_summary}"
+        print(f"Committing with message: '{commit_message}'")
+
+        # Check if index is ready for commit (optional safety check)
+        if not repo.index.diff("HEAD"):
+            print("INFO: Index is empty after staging. No changes to commit. Aborting.")
+            return
+
+        repo.index.commit(commit_message)
+        print("Commit successful.")
+
+        # 5. Push Changes
+        print("Pushing changes to remote...")
+        # Get the active remote (usually 'origin')
+        remote = repo.remote(name='origin')
+        remote.push()
+        print("Push successful. Checkpoint fully recorded on GitHub.")
+
+    except git.GitCommandError as e:
+        print(f"GIT ERROR: A git command failed. Check your remote status or credentials: {e}")
+    except Exception as e:
+        print(f"CRITICAL ERROR during Git automation: {e}")
+
+
 def main():
     """Main entry point for the checkpoint utility."""
     parser = argparse.ArgumentParser(
@@ -139,6 +193,16 @@ def main():
                 print(f"Current Checkpoint Goal: {target_checkpoint.get('context', {}).get('goal', 'N/A')}")
             else:
                 print("\nSTATUS: Target Brain is valid, but Checkpoint failed to load.")
+
+    elif args.action == 'commit':  # <--- NEW LOGIC HERE
+        print("\nACTION: Commit Checkpoint")
+        # For committing, we MUST read the target checkpoint for the message
+        target_checkpoint = read_checkpoint(target_checkpoint_path)
+
+        if target_checkpoint:
+            commit_changes(args.project, target_checkpoint)
+        else:
+            print("Commit aborted: Could not load the latest Checkpoint log to retrieve commit details.")
 
 
 if __name__ == "__main__":

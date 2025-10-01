@@ -1,6 +1,7 @@
 project: Project_Orchestrator
 timestamp: [SET CURRENT DATETIME]
 type: checkpoint
+summary: "Implemented checkpoint.py Phase I (I/O, CLI, Dynamic Pathing, and Path Fix)." # <--- ADD THIS LINE (if not there already)
 
 context:
   goal: "Implement Phase I of checkpoint.py: Core I/O (Read Brain, Read Checkpoint) and CLI setup."
