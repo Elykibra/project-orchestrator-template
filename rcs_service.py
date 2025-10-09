@@ -41,41 +41,52 @@ def _append_to_rcs_logs(log_entry: dict):
 
 def get_api_priority_list(base_list: list) -> list:
     """
-    Reads historical data to dynamically prioritize the list of models.
-    Models with recent low scores or failures are moved down or deprioritized.
+    Reads historical data to dynamically prioritize the list of models by combining
+    efficiency scores and failure penalties. Models with a recent penalty_score (0.1)
+    are immediately dropped in priority.
     """
     logs = _read_rcs_logs()
 
-    # Simple aggregation: Collect the last 10 scores for each API
-    api_scores = {model: [] for model in base_list}
+    # Initialize priority map: high score (1.0) means high priority/no bad history
+    priority_map = {model: 1.0 for model in base_list}
 
-    # Iterate in reverse to prioritize recent scores
-    for entry in reversed(logs):
-        if len(entry.get('reflections', {}).get('api_efficiency_scores', {})) == 0:
-            continue
+    # 1. Process all logs to determine model priority based on the latest performance/failure
+    # We iterate forward, meaning the latest log entry will overwrite prior entries, which is what we want.
+    for entry in logs:
+        # A. Check for API_FAILURE Logs (The CRITICAL Fix: Instant Penalty)
+        if entry.get('type') == 'API_FAILURE':
+            model = entry.get('model')
+            penalty = entry.get('penalty_score', 0.1)
 
-        for model, score in entry['reflections']['api_efficiency_scores'].items():
-            if model in api_scores and len(api_scores[model]) < 10:
-                api_scores[model].append(score)
+            if model in priority_map:
+                # Apply the low penalty score (0.1) immediately. This instantly drops the model's priority.
+                # We use penalty as the score, ensuring low scores sink to the bottom.
+                priority_map[model] = penalty
 
-    # Calculate average efficiency score, defaulting to a high score (1.0) if no data
-    priority_map = {}
-    for model, scores in api_scores.items():
-        if scores:
-            # Average score, heavily weighted by the latest result (e.g., last score counts double)
-            avg_score = (sum(scores) + scores[-1]) / (len(scores) + 1)
-            priority_map[model] = avg_score
-        else:
-            # Default high score to models without history
-            priority_map[model] = 1.0
+                # B. Check for Reflection Logs (Simulated Efficiency Scores)
+        elif entry.get('type') == 'checkpoint' and entry.get('reflections'):
+            # NOTE: We iterate over all models found in the simulated scoring section.
+            efficiency_scores = entry['reflections'].get('api_efficiency_scores', {})
 
-    # Sort the base list by the calculated average score (descending)
+            for model, score in efficiency_scores.items():
+                if model in priority_map:
+                    # If a model succeeded and received a score, we can use it, but only if it
+                    # hasn't just been instantly penalized in this same run (not strictly necessary
+                    # but good defensive coding).
+                    if priority_map[model] > 0.1:
+                        # Use the reported score as the current priority value.
+                        priority_map[model] = score
+
+                        # 2. Sort the base list by the calculated score (descending)
+    # Models with a score of 1.0 (no history), followed by efficiency scores (e.g., 0.8),
+    # followed by penalty scores (0.1).
     sorted_list = sorted(base_list, key=lambda model: priority_map.get(model, 0.0), reverse=True)
 
     # If all models have the same default score, shuffle to prevent provider lock-in
     if all(score == 1.0 for score in priority_map.values()):
         random.shuffle(sorted_list)
 
+    print(f"RCS INFO: Dynamic API Priority Map: {json.dumps(priority_map, indent=4)}")  # New audit print
     print(f"RCS INFO: Dynamic API Priority List generated: {sorted_list}")
     return sorted_list
 
