@@ -1,0 +1,38 @@
+project: Discord Bot OCI Migration
+timestamp: '2025-10-05T14:34:29.949555'
+type: checkpoint
+summary: AI successfully generated the summary.
+context:
+  previous_checkpoint_summary: 'The project has successfully completed the initial
+    scoping phase. The architecture has been refined to eliminate external dependencies
+    by migrating the PostgreSQL database inside the Oracle Cloud Infrastructure (OCI)
+    environment. The deployment model now centers on a single, self-contained OCI
+    Always Free Compute VM (likely Ampere A1) that will host both the Python Discord
+    bot and its dedicated PostgreSQL instance.
+
+
+    This architectural decision ensures true 24/7 free uptime by consolidating all
+    resources onto the free tier allowance and greatly simplifies network security
+    by allowing the bot to connect to the database via localhost.
+
+
+    The immediate next steps are focused on execution: provisioning the OCI VM, creating
+    a local backup of the existing PostgreSQL data (pg_dump), and transferring/restoring
+    that data onto the new cloud-based database.'
+  previous_next_steps_completed:
+  - Log into the OCI Console and **Provision the Always Free Compute VM** (Ampere
+    A1 recommended). Ensure you download the SSH Private Key.
+  - On your **local machine**, execute `pg_dump` using pgAdmin 4 or the command line
+    to create a single, compressed backup file of the existing database (e.g., `bot_data.dump`).
+  - Use **SSH (or SFTP)** to securely connect to the new OCI VM and **Transfer the
+    `bot_data.dump` file** from your local machine to the VM's home directory.
+  - On the **OCI VM**, install the PostgreSQL server package (e.g., `sudo apt install
+    postgresql-server`), initialize a new database, and create a user account for
+    the bot.
+  - On the **OCI VM**, use the `psql` utility to **Restore the data** from `bot_data.dump`
+    into the newly created database.
+  next_goal: AI successfully generated the next goal.
+decisions:
+- 'TODO: Fill this in during the review step.'
+next_steps:
+- AI successfully generated the next tasks.

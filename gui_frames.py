@@ -1,59 +1,40 @@
+# gui_frames.py
+# Contains all the visual frame classes (Views) and the ReviewDialog.
+
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk, Toplevel
 import os
 import sys
-import json
-import datetime
 import yaml
 import glob
-from ttkthemes import ThemedTk
+import datetime
+import threading
+import rcs_service
 
-# --- Setup path to import checkpoint.py ---
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-from checkpoint import (
-    read_orchestrator_state,
-    read_checkpoint,
-    get_project_paths,
-    create_project,
-    commit_changes,
-    update_checkpoint_file,
-)
-
-# --- UI Constants ---
-BG_DARK = '#111827'
-CARD_DARK = '#1F2937'
-FG_DARK = '#E5E7EB'
-ACCENT_BLUE = '#3B82F6'
-ACCENT_BLUE_ACTIVE = '#2563EB'
-BORDER_DARK = '#374151'
-SUCCESS_GREEN = '#10B981'
-ERROR_RED = '#EF4444'
-
-# --- File Path Constants ---
-ORCHESTRATOR_STATE_PATH = "brains/Project_Orchestrator/project_orchestrator.state.json"
-LOGS_DIR = "brains/Project_Orchestrator/logs"
+# Import constants and local modules
+from checkpoint import read_checkpoint, read_orchestrator_state, create_project, update_checkpoint_file
+from git_service import commit_changes as git_commit_changes  # NEW: Import the delegated commit function
+from gui_constants import BG_DARK, CARD_DARK, FG_DARK, ACCENT_BLUE, SUCCESS_GREEN, ERROR_RED, LOGS_DIR
 
 
 # ====================================================================
-# CONSOLE REDIRECTION CLASS
+# HELPER FUNCTION FOR RESILIENT FALLBACK LOGGING (NEW)
 # ====================================================================
 
-class ConsoleRedirector:
-    """A class to redirect stdout and stderr to a Tkinter widget."""
+def _get_ai_content_or_fail(data_dict: dict, key: str, failure_message):
+    """
+    Retrieves content from the AI dictionary. If content is missing, None, empty string,
+    or empty list, it returns the explicit failure message for auditing.
+    """
+    content = data_dict.get(key)
 
-    def __init__(self, widget):
-        self.widget = widget
+    # Check if content is provided and non-empty
+    if content and (isinstance(content, str) and content.strip()) or \
+            (isinstance(content, list) and len(content) > 0):
+        return content
 
-    def write(self, text):
-        self.widget.config(state=tk.NORMAL)
-        self.widget.insert(tk.END, text)
-        self.widget.see(tk.END)  # Auto-scroll
-        self.widget.config(state=tk.DISABLED)
-
-    def flush(self):
-        pass  # Required for stream interface
-
+    # Return explicit failure message for auditing
+    return failure_message
 
 # ====================================================================
 # REVIEW DIALOG (MODAL)
@@ -92,6 +73,7 @@ class ReviewDialog(Toplevel):
         # --- Display Fields (Read-Only) ---
         self._create_display_field(main_frame, "Summary:", self.draft_data.get('summary', ''))
         self._create_display_field(main_frame, "Next Goal:", self.draft_data.get('context', {}).get('next_goal', ''))
+        self._create_display_field(main_frame, "Tasks:", "\n".join(self.draft_data.get('next_steps', [])))
 
         # --- Decisions Field (Editable) ---
         ttk.Label(main_frame, text="Decisions:", style="CardHeader.TLabel").pack(anchor="w", pady=(10, 5))
@@ -109,15 +91,15 @@ class ReviewDialog(Toplevel):
     def _create_display_field(self, parent, label_text, value_text):
         frame = ttk.Frame(parent, style="Card.TFrame")
         frame.pack(fill="x", pady=2)
-        ttk.Label(frame, text=label_text, style="CardHeader.TLabel").pack(side="left", padx=(0, 10))
-        ttk.Label(frame, text=value_text, style="Card.TLabel", wraplength=500).pack(side="left")
+        ttk.Label(frame, text=label_text, style="CardHeader.TLabel").pack(side="left", padx=(0, 10), anchor='n')
+        ttk.Label(frame, text=value_text, style="Card.TLabel", wraplength=500, justify=tk.LEFT).pack(side="left",
+                                                                                                     fill='x',
+                                                                                                     expand=True)
 
     def save_and_finalize(self):
-        # 1. Update data with decisions from text widget
         decisions_raw = self.decisions_text.get("1.0", tk.END).strip()
         self.draft_data['decisions'] = [line.strip() for line in decisions_raw.split('\n') if line.strip()]
 
-        # 2. Save changes back to the draft file
         try:
             with open(self.draft_path, 'w', encoding='utf-8') as f:
                 yaml.safe_dump(self.draft_data, f, sort_keys=False, default_flow_style=False)
@@ -125,151 +107,15 @@ class ReviewDialog(Toplevel):
             messagebox.showerror("Save Error", f"Failed to save changes to draft file: {e}", parent=self)
             return
 
-        # 3. Run the finalization script
         proj_name = self.draft_data.get('project')
         new_path = update_checkpoint_file(proj_name)
         if new_path:
-            messagebox.showinfo("Success",
-                                f"Checkpoint finalized successfully!\nNew file: {os.path.basename(new_path)}",
-                                parent=self)
-            self.controller.frames["CheckpointFrame"].on_show()  # Refresh parent frame
+            messagebox.showinfo("Success", f"Checkpoint finalized successfully!", parent=self)
+            self.controller.frames["CheckpointFrame"].on_show()
             self.destroy()
         else:
             messagebox.showerror("Finalization Failed",
                                  "Could not finalize the checkpoint. Check the console for details.", parent=self)
-
-
-# ====================================================================
-# CORE APP CLASS
-# ====================================================================
-
-class OrchestratorGUI:
-    def __init__(self, master):
-        self.master = master
-        self.master.title("Mother AI Project Orchestrator")
-        self.master.geometry("1200x800")
-        self.master.minsize(1000, 700)
-
-        # --- Fonts & Styling ---
-        self.default_font = ("Segoe UI", 10)
-        self.header_font = ("Segoe UI", 18, "bold")
-        self.label_font = ("Segoe UI", 11, "bold")
-        self._setup_styles()
-
-        self.master.configure(bg=BG_DARK)
-
-        self.current_project = tk.StringVar(master)
-        self.frames = {}
-        self.nav_buttons = {}
-
-        # --- Top Navigation Bar ---
-        self.navbar = ttk.Frame(master, style="Card.TFrame")
-        self.navbar.pack(side="top", fill="x", padx=10, pady=(10, 5))
-        self._create_navbar()
-
-        # --- Main Content Area ---
-        self.container = ttk.Frame(master, padding=(10, 5, 10, 5))
-        self.container.pack(fill="both", expand=True)
-        self.container.grid_rowconfigure(0, weight=1)
-        self.container.grid_columnconfigure(0, weight=1)
-
-        # --- Console Panel ---
-        self.console_frame = ttk.Frame(master, style="Card.TFrame", height=150)
-        self.console_frame.pack(side="bottom", fill="x", padx=10, pady=(5, 10))
-        self._setup_console()
-
-        self._load_initial_state()
-        self._create_frames()
-        self.show_frame("DashboardFrame")
-
-    def _setup_styles(self):
-        self.style = ttk.Style()
-        self.style.theme_use('equilux')
-        self.style.configure("Card.TFrame", background=CARD_DARK, borderwidth=1, relief="solid")
-        self.style.configure('TLabel', background=BG_DARK, foreground=FG_DARK, font=self.default_font)
-        self.style.configure('Header.TLabel', font=self.header_font, background=CARD_DARK)
-        self.style.configure('Card.TLabel', background=CARD_DARK, foreground=FG_DARK, font=self.default_font)
-        self.style.configure('CardHeader.TLabel', font=self.label_font, background=CARD_DARK)
-        self.style.configure('Success.TLabel', background=CARD_DARK, foreground=SUCCESS_GREEN, font=self.label_font)
-        self.style.configure("Accent.TButton", font=self.label_font, background=ACCENT_BLUE, foreground='white',
-                             borderwidth=0, padding=(15, 10))
-        self.style.map("Accent.TButton", background=[('active', ACCENT_BLUE_ACTIVE)])
-
-    def _create_navbar(self):
-        nav_items = {
-            "Dashboard": "DashboardFrame",
-            "History": "HistoryFrame",
-            "Checkpoint": "CheckpointFrame",
-            "New Project": "NewProjectFrame",
-            "Commit": "CommitFrame",
-        }
-        for label, frame_key in nav_items.items():
-            btn = ttk.Button(self.navbar, text=label, style="TButton", command=lambda k=frame_key: self.show_frame(k))
-            btn.pack(side="left", padx=10, pady=10)
-            self.nav_buttons[label] = btn
-
-    def _setup_console(self):
-        ttk.Label(self.console_frame, text="Console Output", style="CardHeader.TLabel").pack(anchor="w", padx=10,
-                                                                                             pady=5)
-        console_widget = scrolledtext.ScrolledText(self.console_frame, height=8, background=BG_DARK, foreground=FG_DARK,
-                                                   font=("Consolas", 10), state=tk.DISABLED)
-        console_widget.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-
-        # Redirect stdout and stderr
-        sys.stdout = ConsoleRedirector(console_widget)
-        sys.stderr = ConsoleRedirector(console_widget)
-        print(
-            f"Dasmarinas City, Philippines - {datetime.datetime.now().strftime('%A, %B %d, %Y %I:%M %p')}\nWelcome to the Mother AI Orchestrator.\n")
-
-    def _create_frames(self):
-        for F in (DashboardFrame, HistoryFrame, CheckpointFrame, NewProjectFrame, CommitFrame):
-            page_name = F.__name__
-            frame = F(parent=self.container, controller=self)
-            self.frames[page_name] = frame
-            frame.grid(row=0, column=0, sticky="nsew")
-
-    def show_frame(self, page_name):
-        frame = self.frames[page_name]
-        frame.tkraise()
-        if hasattr(frame, 'on_show'):
-            frame.on_show()
-        for label, btn in self.nav_buttons.items():
-            btn.configure(style="TButton")
-        # Correctly find the key associated with the page_name to highlight the button
-        for label, key_name in self.nav_buttons.items():
-            if self.frames[page_name].__class__.__name__ == key_name.cget(
-                    'text'):  # This logic is flawed. Let's fix it.
-                pass  # The old logic was incorrect.
-
-        active_label = ""
-        for label, frame_class_name in {
-            "Dashboard": "DashboardFrame", "History": "HistoryFrame", "Checkpoint": "CheckpointFrame",
-            "New Project": "NewProjectFrame", "Commit": "CommitFrame"}.items():
-            if frame_class_name == page_name:
-                active_label = label
-                break
-
-        if active_label and active_label in self.nav_buttons:
-            self.nav_buttons[active_label].configure(style="Accent.TButton")
-
-    def _load_initial_state(self):
-        try:
-            state_data = read_orchestrator_state(ORCHESTRATOR_STATE_PATH)
-            active_proj = state_data.get('meta', {}).get('active_project', '')
-            self.current_project.set(active_proj)
-        except Exception as e:
-            print(f"ERROR: Failed to load orchestrator state: {e}")
-            self.current_project.set("PROJECT_ERROR")
-
-    def get_project_context(self):
-        proj_name = self.current_project.get()
-        try:
-            state_data = read_orchestrator_state(ORCHESTRATOR_STATE_PATH)
-            brain_path, checkpoint_path = get_project_paths(state_data, proj_name)
-            return (proj_name, state_data, brain_path, checkpoint_path)
-        except Exception as e:
-            print(f"ERROR: Could not get context for '{proj_name}': {e}")
-            return proj_name, None, None, None
 
 
 # ====================================================================
@@ -297,7 +143,7 @@ class DashboardFrame(BaseFrame):
 
         # --- Status Panel ---
         status_panel = ttk.Frame(self, style="Card.TFrame", padding=20)
-        status_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        status_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=10)
 
         ttk.Label(status_panel, text="Project Status", style="Header.TLabel", background=CARD_DARK).pack(anchor="w",
                                                                                                          pady=(0, 15))
@@ -317,7 +163,7 @@ class DashboardFrame(BaseFrame):
 
         # --- File Explorer Panel ---
         explorer_panel = ttk.Frame(self, style="Card.TFrame", padding=20)
-        explorer_panel.grid(row=0, column=1, sticky="nsew")
+        explorer_panel.grid(row=0, column=1, sticky="nsew", pady=10)
         ttk.Label(explorer_panel, text="Project Files", style="Header.TLabel", background=CARD_DARK).pack(anchor="w",
                                                                                                           pady=(0, 15))
         self.file_tree = ttk.Treeview(explorer_panel, show="tree")
@@ -334,7 +180,7 @@ class DashboardFrame(BaseFrame):
 
     def load_project_list(self):
         try:
-            state_data = read_orchestrator_state(ORCHESTRATOR_STATE_PATH)
+            state_data = read_orchestrator_state(self.controller.ORCHESTRATOR_STATE_PATH)
             projects = list(state_data.get('managed_projects', {}).keys())
             self.project_selector['values'] = projects
             if self.controller.current_project.get() not in projects:
@@ -351,7 +197,6 @@ class DashboardFrame(BaseFrame):
         else:
             latest_checkpoint = read_checkpoint(checkpoint_path)
             if latest_checkpoint:
-                # FIX: Get 'next_goal' from its correct nested location inside 'context'.
                 goal = latest_checkpoint.get("context", {}).get("next_goal", "No goal defined.")
                 self.goal_label.config(text=goal)
                 steps = latest_checkpoint.get("next_steps", [])
@@ -389,11 +234,10 @@ class HistoryFrame(BaseFrame):
     def __init__(self, parent, controller):
         super().__init__(parent, controller)
         self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=3)  # Content gets more space
+        self.grid_columnconfigure(1, weight=3)
 
-        # --- File List Panel ---
         list_panel = ttk.Frame(self, style="Card.TFrame", padding=20)
-        list_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        list_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=10)
         ttk.Label(list_panel, text="Checkpoint Logs", style="Header.TLabel", background=CARD_DARK).pack(anchor="w",
                                                                                                         pady=(0, 15))
         self.log_listbox = tk.Listbox(list_panel, background=BG_DARK, foreground=FG_DARK,
@@ -401,9 +245,8 @@ class HistoryFrame(BaseFrame):
         self.log_listbox.pack(fill="both", expand=True)
         self.log_listbox.bind("<<ListboxSelect>>", self.on_log_select)
 
-        # --- Content Viewer Panel ---
         content_panel = ttk.Frame(self, style="Card.TFrame", padding=20)
-        content_panel.grid(row=0, column=1, sticky="nsew")
+        content_panel.grid(row=0, column=1, sticky="nsew", pady=10)
         ttk.Label(content_panel, text="Log Content", style="Header.TLabel", background=CARD_DARK).pack(anchor="w",
                                                                                                        pady=(0, 15))
         self.content_text = scrolledtext.ScrolledText(content_panel, wrap=tk.WORD, background=BG_DARK,
@@ -457,7 +300,7 @@ class CheckpointFrame(BaseFrame):
         super().__init__(parent, controller)
 
         main_card = ttk.Frame(self, style="Card.TFrame", padding=20)
-        main_card.grid(row=0, column=0, sticky="nsew")
+        main_card.grid(row=0, column=0, sticky="nsew", pady=10)
 
         ttk.Label(main_card, text="Create New Checkpoint", style="Header.TLabel", background=CARD_DARK).pack(anchor="w",
                                                                                                              pady=(0,
@@ -478,7 +321,7 @@ class CheckpointFrame(BaseFrame):
                                                          foreground=FG_DARK, font=self.controller.default_font)
         self.next_steps_text.pack(fill="both", expand=True, pady=5)
 
-        self.create_draft_button = ttk.Button(main_card, text="Create Draft & Review", command=self.create_draft,
+        self.create_draft_button = ttk.Button(main_card, text="Create Draft & Review (AUTO)", command=self.create_draft,
                                               style="Accent.TButton")
         self.create_draft_button.pack(pady=10, anchor="e")
 
@@ -487,6 +330,34 @@ class CheckpointFrame(BaseFrame):
 
     def on_show(self):
         self.check_draft_status()
+        self.update_ui_mode()
+
+    def update_ui_mode(self):
+        status = self.controller.api_status_var.get()
+        # Reset colors/styles
+        self.create_draft_button.config(style='Accent.TButton', state=tk.NORMAL)
+
+        if "AUTO" in status:
+            self.create_draft_button.config(text="Create Draft & Review (AUTO)")
+            self.summary_entry.config(state=tk.DISABLED)
+            self.goal_entry.config(state=tk.DISABLED)
+            self.next_steps_text.config(state=tk.DISABLED)
+            # Clear fields in AUTO mode
+            self.summary_entry.delete(0, tk.END)
+            self.goal_entry.delete(0, tk.END)
+            self.next_steps_text.delete("1.0", tk.END)
+
+        elif "MANUAL" in status:
+            self.create_draft_button.config(text="Create Draft & Review (MANUAL)", style='Error.TButton')
+            self.summary_entry.config(state=tk.NORMAL)
+            self.goal_entry.config(state=tk.NORMAL)
+            self.next_steps_text.config(state=tk.NORMAL)
+            # Prompt the user for manual entry with a guiding template
+            if not self.summary_entry.get().strip():
+                self.summary_entry.insert(0, "# Paste Web Gemini Summary Here")
+            if not self.next_steps_text.get("1.0", tk.END).strip():
+                self.next_steps_text.insert("1.0",
+                                            "- Task 1: (e.g., Implement function X)\n- Task 2: (e.g., Write unit test for Y)")
 
     def check_draft_status(self):
         proj_name = self.controller.current_project.get()
@@ -502,7 +373,8 @@ class CheckpointFrame(BaseFrame):
             self.create_draft_button.config(state=tk.DISABLED)
         else:
             self.draft_status_label.config(text="Ready to create a new draft checkpoint.", style='Success.TLabel')
-            self.create_draft_button.config(state=tk.NORMAL)
+            self.create_draft_button.config(
+                state=tk.NORMAL if "CHECKING" not in self.controller.api_status_var.get() else tk.DISABLED)
 
     def create_draft(self):
         proj_name, _, _, checkpoint_path = self.controller.get_project_context()
@@ -516,30 +388,104 @@ class CheckpointFrame(BaseFrame):
         summary = self.summary_entry.get().strip()
         goal = self.goal_entry.get().strip()
         steps_raw = self.next_steps_text.get("1.0", tk.END).strip()
+        next_steps = [line.strip() for line in steps_raw.split('\n') if line.strip()]
 
-        if not all([summary, goal, steps_raw]):
-            messagebox.showerror("Error", "All fields are required to create a draft.")
+        if self.controller.api_status_var.get() == "🔴 MANUAL":
+            if not all([summary, goal, next_steps]):
+                messagebox.showerror("Error",
+                                     "All manual fields (Summary, Goal, Tasks) are required when in MANUAL mode.")
+                return
+
+            print("Executing MANUAL mode using user-provided input.")
+            new_checkpoint_data = {
+                'project': proj_name, 'timestamp': datetime.datetime.now().isoformat(), 'type': 'checkpoint',
+                'summary': summary,
+                'context': {'previous_checkpoint_summary': latest_checkpoint_data.get('summary', 'N/A'),
+                            'previous_next_steps_completed': latest_checkpoint_data.get('next_steps', []),
+                            'next_goal': goal},
+                'decisions': ["TODO: Fill this in during the review step."],
+                'next_steps': next_steps
+            }
+            self._save_draft_and_open_review(new_checkpoint_data)
             return
 
-        # Build data and save to file
-        next_steps = [line.strip() for line in steps_raw.split('\n') if line.strip()]
+        print("Attempting AUTO mode using multi-API fallback...")
+
+        # The build_checkpoint_prompt now generates the unified JSON prompt
+        context_prompt = self.controller.build_checkpoint_prompt(proj_name, checkpoint_path)
+
+        # --- NEW: Print the Full Prompt to the Console/Terminal ---
+        # The prompt now contains the Unified Context JSON
+        print("\n--- AI Checkpoint Prompt (Unified Context JSON) ---")
+        print(context_prompt)
+        print("--------------------------------------\n")
+        # --------------------------------------------------------
+        self.create_draft_button.config(text="Generating...", state=tk.DISABLED)
+
+        def run_api_draft_worker():
+            from ai_service import get_ai_checkpoint_draft
+            ai_draft_data = get_ai_checkpoint_draft(context_prompt)
+
+            self.controller.master.after(0, lambda: self._handle_api_response(
+                ai_draft_data, proj_name, latest_checkpoint_data))
+
+        threading.Thread(target=run_api_draft_worker, daemon=True).start()
+        return
+
+    def _handle_api_response(self, ai_draft_data, proj_name, latest_checkpoint_data):
+        # We call update_ui_mode() later to ensure the button re-enables correctly
+
+        if ai_draft_data is None:
+            self.controller.api_status_var.set("🔴 MANUAL")
+            self.update_ui_mode()  # Now update UI immediately after setting MANUAL status
+            messagebox.showerror("API ERROR",
+                                 "All API tiers exhausted. Please use manual mode (fill fields above) and try the automatic check again later.")
+            return
+
+        # --- CRITICAL FIX: Use the helper function for Auditable Failure Logging ---
         new_checkpoint_data = {
-            'project': proj_name, 'timestamp': datetime.datetime.now().isoformat(), 'type': 'checkpoint',
-            'summary': summary,
-            'context': {'previous_checkpoint_summary': latest_checkpoint_data.get('summary', 'N/A'),
-                        'previous_next_steps_completed': latest_checkpoint_data.get('next_steps', []),
-                        'next_goal': goal},
-            'decisions': ["TODO: Fill this in during the review step."], 'next_steps': next_steps
+            'project': proj_name,
+            'timestamp': datetime.datetime.now().isoformat(),
+            'type': 'checkpoint',
+            'summary': _get_ai_content_or_fail(
+                ai_draft_data, 'summary', 'AI FAILED TO GENERATE SUMMARY. Review Prompt/Context.'
+            ),
+            'context': {
+                'previous_checkpoint_summary': latest_checkpoint_data.get('summary', 'N/A'),
+                'previous_next_steps_completed': latest_checkpoint_data.get('next_steps', []),
+                'next_goal': _get_ai_content_or_fail(
+                    ai_draft_data, 'next_goal', 'AI FAILED TO GENERATE NEXT GOAL. Review Prompt/Context.'
+                )
+            },
+            'decisions': _get_ai_content_or_fail(
+                ai_draft_data, 'decisions', ["AI FAILED TO SUGGEST DECISIONS."]
+            ),
+            'next_steps': _get_ai_content_or_fail(
+                ai_draft_data, 'next_steps', ['AI FAILED TO GENERATE NEXT TASKS.']
+            )
         }
+        # --------------------------------------------------------------------------
+
+        self.update_ui_mode()
+        self._save_draft_and_open_review(new_checkpoint_data)
+
+        # CRITICAL STEP: Hook for RCS to run in the background
+        # Note: We pass the checkpoint_data dictionary, which has the summary/goal data.
+        threading.Thread(target=rcs_service.process_reflection,
+                         args=(proj_name, new_checkpoint_data),
+                         daemon=True).start()
+
+    def _save_draft_and_open_review(self, new_checkpoint_data):
+        proj_name = new_checkpoint_data.get('project')
         file_timestamp = datetime.datetime.now().strftime('%Y-%m-%d-%H%M%S')
         filename = os.path.join(LOGS_DIR, f"{file_timestamp}-{proj_name}-checkpoint-NEW.yaml")
 
         try:
+            # This step converts the JSON-OUT data dictionary back to a YAML file (YAML-STORE)
             with open(filename, 'w', encoding='utf-8') as f:
                 yaml.safe_dump(new_checkpoint_data, f, sort_keys=False, default_flow_style=False)
 
             print(f"Draft created: {os.path.basename(filename)}")
-            # Clear fields and open review dialog
             self.summary_entry.delete(0, tk.END)
             self.goal_entry.delete(0, tk.END)
             self.next_steps_text.delete("1.0", tk.END)
@@ -551,14 +497,13 @@ class CheckpointFrame(BaseFrame):
 
 
 # ====================================================================
-# Other Frames (New Project, Commit) - Largely unchanged but inherit BaseFrame
+# Other Frames (New Project, Commit)
 # ====================================================================
-
 class NewProjectFrame(BaseFrame):
     def __init__(self, parent, controller):
         super().__init__(parent, controller)
         main_card = ttk.Frame(self, style="Card.TFrame", padding=20)
-        main_card.grid(row=0, column=0, sticky="nsew")
+        main_card.grid(row=0, column=0, sticky="nsew", pady=10)
         ttk.Label(main_card, text="Scaffold New Project", style="Header.TLabel", background=CARD_DARK).pack(
             pady=(0, 20), anchor="w")
         ttk.Label(main_card, text="Project Name:", style="CardHeader.TLabel").pack(pady=5, anchor="w")
@@ -578,12 +523,11 @@ class NewProjectFrame(BaseFrame):
         if not proj_name or not design_content:
             messagebox.showerror("Error", "Project Name and design content are required.")
             return
-        state_data = read_orchestrator_state(ORCHESTRATOR_STATE_PATH)
-        if create_project(proj_name, state_data, ORCHESTRATOR_STATE_PATH, design_content):
+        state_data = read_orchestrator_state(self.controller.ORCHESTRATOR_STATE_PATH)
+        if create_project(proj_name, state_data, self.controller.ORCHESTRATOR_STATE_PATH, design_content):
             self.controller.current_project.set(proj_name)
             self.controller.show_frame("DashboardFrame")
         else:
-            # Errors are now printed to the GUI console
             messagebox.showerror("Error", "Project creation failed. Check the console for details.")
 
 
@@ -591,7 +535,7 @@ class CommitFrame(BaseFrame):
     def __init__(self, parent, controller):
         super().__init__(parent, controller)
         main_card = ttk.Frame(self, style="Card.TFrame", padding=20)
-        main_card.grid(row=0, column=0, sticky="nsew")
+        main_card.grid(row=0, column=0, sticky="nsew", pady=10)
         ttk.Label(main_card, text="Commit & Push Changes", style="Header.TLabel", background=CARD_DARK).pack(
             pady=(0, 20), anchor="w")
         ttk.Label(main_card,
@@ -609,15 +553,16 @@ class CommitFrame(BaseFrame):
         if not checkpoint_path:
             messagebox.showerror("Error", f"Could not find checkpoint path for {proj_name}.")
             return
+
+        # 1. Get the summary from the latest checkpoint
+        latest_checkpoint = read_checkpoint(checkpoint_path)
+        if not latest_checkpoint:
+            messagebox.showerror("Error", f"Could not load the latest checkpoint summary.")
+            return
+
+        commit_summary = latest_checkpoint.get('summary', 'Automated Checkpoint.')
+
         if messagebox.askyesno("Confirm Commit",
-                               f"Are you sure you want to commit and push changes for '{proj_name}'?"):
-            commit_changes(proj_name, checkpoint_path)
-
-
-# ====================================================================
-# RUN APP
-# ====================================================================
-if __name__ == "__main__":
-    root = ThemedTk(theme="equilux", themebg=True)
-    app = OrchestratorGUI(root)
-    root.mainloop()
+                               f"Are you sure you want to commit and push changes for '{proj_name}'?\n\nCommit Message: {commit_summary}"):
+            # 2. Call the DELEGATED Git Service function
+            git_commit_changes(proj_name, commit_summary)

@@ -1,0 +1,26 @@
+project: Project_Orchestrator
+timestamp: '2025-10-02T00:37:35.273288'
+type: checkpoint
+summary: Implemented and successfully tested the core Git logic (add, commit, push)
+  in checkpoint.py which dynamically pulls the commit message from the latest log
+  file.
+context:
+  previous_checkpoint_summary: Implemented checkpoint.py Phase I (I/O, CLI, Dynamic
+    Pathing, and Path Fix).
+  previous_next_steps_completed:
+  - Implement the Git module in checkpoint.py to automate staging, committing, and
+    pushing changes.
+  - 'Implement the ''new'' action: generate a new Checkpoint YAML based on a prompt
+    and auto-fill data.'
+  - Refactor file paths from hardcoded global constants to dynamic variables based
+    on the project argument.
+  - 'Complete Phase II: Testing the full ''new'' and ''commit'' workflow.'
+  next_goal: Complete the GUI integration phase by connecting the core project creation
+    and checkpoint submission actions to the main buttons.
+decisions: []
+next_steps:
+- Design and implement the new CreateProjectFrame in the GUI to handle file uploads
+  and project data.
+- Connect the new action (create_new_checkpoint) to the corresponding GUI button.
+- Implement a reliable status bar or popup system for user feedback on successful
+  actions and critical errors.

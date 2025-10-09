@@ -4,14 +4,62 @@ import json
 import yaml
 import sys
 import os
-import git
 import datetime
 import re
+
+# Import the new Git Service (needed for the commit_changes in the CLI main function)
+# NOTE: We keep this import here as the CLI entry point (main) is still in this file.
+from git_service import commit_changes  # Import the delegated function
 
 # --- Configuration (Dynamic) ---
 # The path to the orchestrator's own brain is the only one that remains relatively static.
 ORCHESTRATOR_BRAIN_PATH = "brains/Project_Orchestrator/project_orchestrator.brain.v1.json"
 ORCHESTRATOR_STATE_PATH = "brains/Project_Orchestrator/project_orchestrator.state.json"
+LOGS_DIR = "brains/Project_Orchestrator/logs"
+
+def get_truncated_history(project_name: str, max_logs: int = 5) -> list[dict]:
+    """
+    Reads recent checkpoint logs, truncates them to a summary,
+    and returns a list of dictionaries to manage the AI's context window.
+    """
+
+    print(f"INFO: Truncating historical context to the last {max_logs} logs.")
+    log_dir = f"brains/{project_name}/logs"
+    history = []
+
+    # 1. Find all finalized logs (excluding -NEW.yaml)
+    search_pattern = os.path.join(log_dir, f"*-checkpoint-*.yaml")
+    log_files = glob.glob(search_pattern)
+
+    # Filter out -NEW.yaml drafts
+    finalized_logs = sorted([f for f in log_files if "-NEW.yaml" not in f],
+                            key=os.path.getctime, reverse=True)
+
+    # 2. Process only the MAX_LOGS most recent files
+    for filepath in finalized_logs:
+        if len(history) >= max_logs:
+            break
+
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f)
+
+            # 3. Truncate/Summarize the log to only key fields
+            # This is the "summarized version" that saves tokens.
+            truncated_entry = {
+                'id': os.path.basename(filepath),
+                'date': data.get('timestamp', 'N/A'),
+                'summary': data.get('summary', 'No summary available.'),
+                'next_goal': data.get('context', {}).get('next_goal', 'N/A')
+            }
+            history.append(truncated_entry)
+
+        except Exception as e:
+            print(f"WARNING: Skipping corrupted log file {filepath}. Error: {e}")
+            continue
+
+    # Return the history in chronological order (oldest first for the AI's flow)
+    return history[::-1]
 
 def read_brain(path: str) -> dict | None:
     """Reads the Project Brain JSON file, providing robust error handling."""
@@ -57,7 +105,7 @@ def parse_ai_design_content(content: str) -> dict | None:
             print("ERROR: Could not find the JSON block marked by '```json'.")
             return None
 
-        raw_json = json_match.group(1).strip() # Group 1 is the content inside the braces
+        raw_json = json_match.group(1).strip()  # Group 1 is the content inside the braces
         brain_data = json.loads(raw_json)
 
         # 2. FIND and EXTRACT YAML using Regex
@@ -94,6 +142,7 @@ def parse_ai_design_content(content: str) -> dict | None:
         print(f"CRITICAL ERROR during content parsing: {e}")
         return None
 
+
 def read_checkpoint(path: str) -> dict | None:
     """Reads the Latest Checkpoint YAML file, providing robust error handling."""
     print(f"Loading Latest Checkpoint from: {path}...")
@@ -124,6 +173,7 @@ def read_checkpoint(path: str) -> dict | None:
         print(f"An unexpected error occurred while reading the Checkpoint: {e}")
         return None
 
+
 def read_orchestrator_state(path: str) -> dict | None:
     """Reads the dynamic Orchestrator State JSON file (project list, active_project)."""
     try:
@@ -146,6 +196,7 @@ def read_orchestrator_state(path: str) -> dict | None:
     except Exception as e:
         print(f"An unexpected error occurred while reading the Orchestrator State: {e}")
         return None
+
 
 def save_orchestrator_state(path: str, data: dict) -> bool:
     """Saves the dynamic Orchestrator State JSON file."""
@@ -179,75 +230,10 @@ def get_project_paths(orchestrator_brain: dict, project_name: str) -> tuple[str,
     return brain_path, checkpoint_path
 
 
-def commit_changes(project_name: str, checkpoint_path: str):  # PATH is now an argument
-    """Automates Git staging, commit, and push using data from the checkpoint log."""
-
-    print("\nACTION: Automating Git Commit...")
-
-    checkpoint_data = read_checkpoint(checkpoint_path)
-
-    if not checkpoint_data:
-        print("Commit aborted: Could not load the latest Checkpoint log to retrieve commit details.")
-        return
-
-    # 1. Get Commit Message from Checkpoint Data
-    commit_summary = checkpoint_data.get('summary')
-    if not commit_summary:
-        print("ERROR: Checkpoint log is missing the required 'summary' field for the commit message. Aborting commit.")
-        return
-
-    # 2. Get Files to Commit from Checkpoint Data (or assume all staged)
-    # NOTE: In a future phase, we would get this from the 'files_updated' field.
-    # For now, we will stage ALL changes, which is a safer default.
-
-    try:
-        # Initialize the Git repository object. Assumes we are running in the project root.
-        repo = git.Repo(os.getcwd())
-
-        # Check for uncommitted changes (index is dirty)
-        if not repo.is_dirty(untracked_files=True):
-            print("INFO: No changes detected to commit. Git status is clean.")
-            return
-
-        # 3. Stage Files (stage all tracked and untracked changes for simplicity in this phase)
-        print("Staging all modified and untracked files...")
-        repo.git.add(A=True)  # Stages ALL changes (tracked and untracked)
-
-        # 4. Perform Commit
-        commit_message = f"feat: Checkpoint - {project_name} - {commit_summary}"
-        print(f"Committing with message: '{commit_message}'")
-
-        # Check if index is ready for commit (optional safety check)
-        if not repo.index.diff("HEAD"):
-            print("INFO: Index is empty after staging. No changes to commit. Aborting.")
-            return
-
-        repo.index.commit(commit_message)
-        print("Commit successful.")
-
-        # 5. Push Changes
-        print("Pushing changes to remote...")
-        # Get the active remote (usually 'origin')
-        remote = repo.remote(name='origin')
-        remote.push()
-        print("Push successful. Checkpoint fully recorded on GitHub.")
-
-    except git.GitCommandError as e:
-        print(f"GIT ERROR: A git command failed. Check your remote status or credentials: {e}")
-    except Exception as e:
-        print(f"CRITICAL ERROR during Git automation: {e}")
-
-
-LOGS_DIR = "brains/Project_Orchestrator/logs"
-
+# --- REMOVED: commit_changes (DELEGATED TO git_service.py) ---
 
 def _get_next_checkpoint_index(project_name: str) -> int:
     """Finds the largest existing checkpoint index and returns the next sequential number."""
-
-    # Pattern to match committed files, e.g., '2025-10-01-*-Project_Orchestrator-checkpoint-2.yaml'
-    # We look for the number right before .yaml
-    # NOTE: The * in the pattern is correct, but the log files in your system are named
-    # 'YYYY-MM-DD-HHMMSS-Project_Orchestrator-checkpoint-X.yaml'.
 
     # Updated search pattern to exclude the -NEW.yaml files and target indexed files
     search_pattern = os.path.join(LOGS_DIR, f"*-{project_name}-checkpoint-*.yaml")
@@ -269,6 +255,7 @@ def _get_next_checkpoint_index(project_name: str) -> int:
     # Checkpoint 0 is the initial log. We start counting at 1 for subsequent logs.
     # The logic correctly returns max_index + 1.
     return max_index + 1
+
 
 def create_new_checkpoint(project_name: str, latest_checkpoint_data: dict):
     """Interactively creates and saves a new Checkpoint YAML log."""
@@ -298,7 +285,7 @@ def create_new_checkpoint(project_name: str, latest_checkpoint_data: dict):
     # 2. Build New Checkpoint Data Structure
     new_checkpoint_data = {
         'project': project_name,
-        'timestamp': current_time.isoformat(), # Uses full timestamp
+        'timestamp': current_time.isoformat(),  # Uses full timestamp
         'type': 'checkpoint',
         'summary': new_summary,
         'context': {
@@ -314,7 +301,7 @@ def create_new_checkpoint(project_name: str, latest_checkpoint_data: dict):
     # 3. Determine New File Name (Must be unique!)
     # We will use the current date and append a count if needed (a simple version)
     file_timestamp = current_time.strftime('%Y-%m-%d-%H%M%S')
-    base_filename = f"brains/Project_Orchestrator/logs/{file_timestamp}-{project_name}-checkpoint-NEW.yaml"
+    base_filename = f"{LOGS_DIR}/{file_timestamp}-{project_name}-checkpoint-NEW.yaml"
 
     # 4. Save the New Checkpoint File
     try:
@@ -331,10 +318,8 @@ def create_new_checkpoint(project_name: str, latest_checkpoint_data: dict):
 def update_checkpoint_file(project_name: str) -> str or None:
     """
     Finds the latest *-NEW.yaml draft, renames it to the next sequential index,
-    and returns the new finalized path.
+    and returns the new finalized path. (YAML-STORE)
     """
-    # NOTE: LOGS_DIR, os, glob, and re must be imported/defined.
-    LOGS_DIR = "brains/Project_Orchestrator/logs"  # Ensure this matches your path
 
     # 1. Find the NEW Draft File
     new_draft_pattern = os.path.join(LOGS_DIR, f"*-{project_name}-checkpoint-NEW.yaml")
@@ -384,11 +369,8 @@ def update_checkpoint_file(project_name: str) -> str or None:
         return None
 
 
-# NOTE: You must also include the helper function:
-# def _get_next_checkpoint_index(project_name: str) -> int: ... (as provided earlier)
-
-def create_project(project_name: str, orchestrator_state: dict, orchestrator_state_path: str, design_content: str) -> bool:
-
+def create_project(project_name: str, orchestrator_state: dict, orchestrator_state_path: str,
+                   design_content: str) -> bool:
     print(f"\nACTION: Scaffolding New Project '{project_name}'...")
     date_stamp = datetime.date.today().isoformat()
 
@@ -433,7 +415,7 @@ def create_project(project_name: str, orchestrator_state: dict, orchestrator_sta
     # 2. Project Brain File Generation (v1) - USE AI-GENERATED CONTENT
     try:
         with open(brain_path, 'w', encoding='utf-8') as f:
-            json.dump(initial_brain_data, f, indent=4) # Use AI-provided data
+            json.dump(initial_brain_data, f, indent=4)  # Use AI-provided data
         print(f"Created initial Project Brain file using AI design: {brain_path}")
     except Exception as e:
         print(f"ERROR: Failed to write brain file: {e}")
@@ -479,7 +461,6 @@ def create_project(project_name: str, orchestrator_state: dict, orchestrator_sta
 
 def main():
     """Main entry point for the checkpoint utility."""
-    # NOTE: Hardcoded paths removed. Project paths determined dynamically.
 
     parser = argparse.ArgumentParser(
         description="Mother AI Project Checkpoint Utility. Manages structured logs and Git flow."
@@ -518,7 +499,7 @@ def main():
     if args.action == 'update':
         # Simply call the update logic and exit, as its job is done.
         update_checkpoint_file(args.project)
-        return # ***CRITICAL: Exit main() after update is done***
+        return  # ***CRITICAL: Exit main() after update is done***
 
     print(f"--- Mother AI Checkpoint Utility (Project: {args.project}) ---")
 
@@ -539,10 +520,7 @@ def main():
             print("ERROR: Cannot 'create' the orchestrator project itself. Use a specific project name.")
             return
 
-    # 2. Get the specific project file paths
-    # This code BLOCK now only runs for 'status', 'new', 'commit'
-    # It checks if the project exists in the orchestrator before continuing
-
+    # 3. Get the specific project file paths
     target_brain_path, target_checkpoint_path = get_project_paths(orchestrator_state, args.project)
 
     if not target_brain_path:
@@ -563,10 +541,18 @@ def main():
         create_new_checkpoint(args.project, target_checkpoint)
 
     elif args.action == 'commit':
-        # NOTE: We skip reading the checkpoint here and do it inside commit_changes
-        # to ensure it reads the newest file (which is the next task)
-        print("\nACTION: Commit Checkpoint")
-        commit_changes(args.project, target_checkpoint_path)  # Pass the path instead of data
+        print("\nACTION: Commit Checkpoint (Delegated to Git Service)")
+        # We need to read the latest summary from the checkpoint for the commit message
+        latest_checkpoint_data = read_checkpoint(target_checkpoint_path)
+        if not latest_checkpoint_data:
+            print("Commit aborted: Could not load the latest Checkpoint log to retrieve summary.")
+            return
+
+        commit_summary = latest_checkpoint_data.get('summary', 'Automated Checkpoint.')
+
+        # --- NEW: Call the Git Service ---
+        commit_changes(args.project, commit_summary)
+
 
 if __name__ == "__main__":
     # Ensure this script can run from the project root directory

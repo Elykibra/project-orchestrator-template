@@ -2,7 +2,7 @@
     "managed_projects": {
         "Project_Orchestrator": {
             "brain_path": "brains/Project_Orchestrator/project_orchestrator.brain.v1.json",
-            "latest_checkpoint": "brains/Project_Orchestrator/logs/2025-10-02-orchestrator-checkpoint-2.yaml",
+            "latest_checkpoint": "brains/Project_Orchestrator/logs\\2025-10-09-125758-Project_Orchestrator-checkpoint-8.yaml",
             "status": "In Development"
         },
         "discord_ai_bot": {
@@ -10,14 +10,14 @@
             "latest_checkpoint": "brains/discord_ai_bot/logs/2025-10-01-checkpoint-2.yaml",
             "status": "Active Maintenance"
         },
-        "Code_Analyzer": {
+        "Discord Bot OCI Migration": {
             "status": "initialized",
             "current_version": "v1.0",
-            "brain_path": "brains/Code_Analyzer/Code_Analyzer.brain.v1.json",
-            "latest_checkpoint": "brains/Code_Analyzer/logs/2025-10-01-checkpoint-0.yaml"
+            "brain_path": "brains/Discord Bot OCI Migration/Discord Bot OCI Migration.brain.v1.json",
+            "latest_checkpoint": "brains/Discord Bot OCI Migration/logs\\2025-10-02-222659-Discord Bot OCI Migration-checkpoint-1.yaml"
         }
     },
     "meta": {
-        "active_project": "Code_Analyzer"
+        "active_project": "Discord Bot OCI Migration"
     }
 }
